@@ -145,12 +145,15 @@ jobs:
           EOF
           )
 
-          # Idempotent: if a release for this tag already exists, delete it and
-          # recreate so the assets and notes always reflect this build.
+          # Idempotent: if a release for this tag already exists, delete it (keep the
+          # tag) and recreate so the assets and notes reflect this build.
           if gh release view "$TAG" >/dev/null 2>&1; then
             echo "Release $TAG already exists; deleting and recreating."
-            gh release delete "$TAG" --yes --cleanup-tag
+            gh release delete "$TAG" --yes
           fi
+          # --verify-tag requires the tag to exist (it does - we were pushed
+          # via a tag). Do NOT use --cleanup-tag on delete, which would remove
+          # the tag and break this step.
           gh release create "$TAG" dist/*.spk \
             --title "Komari Agent ${VERSION}" \
             --notes "$NOTES" \
