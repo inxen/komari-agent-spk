@@ -1,0 +1,174 @@
+name: Build Komari Agent SPK
+
+# Manual build only. Upstream komari-agent releases are infrequent/stable,
+# so there is no scheduled polling - trigger a build explicitly when a new
+# upstream version is desired.
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Upstream komari-agent version (e.g. 1.2.61). Empty = use VERSION file.'
+        required: false
+        default: ''
+      archs:
+        description: 'Space separated arch families (x86_64 armv7 armv8)'
+        required: false
+        default: 'x86_64 armv7 armv8'
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    env:
+      ARCHS: ${{ github.event.inputs.archs || 'x86_64 armv7 armv8' }}
+      DISPATCH_VERSION: ${{ github.event.inputs.version }}
+      IS_PUSH_TAG: ${{ startsWith(github.ref, 'refs/tags/') }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Resolve version
+        id: version
+        run: |
+          CUR=$(head -n1 VERSION | tr -d '[:space:]')
+          UP="${CUR%%-*}"
+          REV="${CUR##*-}"
+          REV="${REV:-1}"
+
+          if [ -n "$DISPATCH_VERSION" ]; then
+            # workflow_dispatch: input is the upstream version.
+            TARGET="$DISPATCH_VERSION"
+            SPK="${TARGET}-${REV}"
+          elif [ "$IS_PUSH_TAG" = "true" ]; then
+            # push tag v<SPK_VERSION> (e.g. v1.2.60-1): use it verbatim.
+            SPK="${GITHUB_REF_NAME#v}"
+            TARGET="${SPK%%-*}"
+          else
+            # No input: build whatever VERSION currently tracks.
+            TARGET="$UP"
+            SPK="$CUR"
+          fi
+
+          echo "target upstream=$TARGET spk_version=$SPK"
+          echo "version=$TARGET" >> "$GITHUB_OUTPUT"
+          echo "spk_version=$SPK" >> "$GITHUB_OUTPUT"
+
+      - name: Update VERSION
+        run: |
+          printf '%s\n' "${{ steps.version.outputs.spk_version }}" > VERSION
+          echo "VERSION -> $(cat VERSION)"
+
+      - name: Download agent binaries
+        run: make download
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+      - name: Cache Synology toolkit tarballs
+        uses: actions/cache@v4
+        with:
+          path: /opt/toolkit/toolkit_tarballs
+          key: toolkit-tarballs-dsm74
+
+      - name: Build SPKs natively (Synology Toolkit)
+        run: |
+          df -h / | tail -1
+          # Native (no Docker) build: clone pkgscripts-ng once, then build each
+          # arch chroot in turn and clean it up afterwards to stay within the
+          # runner's disk budget (~14GB; one chroot is ~6-7GB).
+          if [ ! -d /opt/toolkit/pkgscripts-ng ]; then
+            sudo mkdir -p /opt/toolkit
+            sudo git clone --depth 1 -b DSM7.4 \
+              https://github.com/SynologyOpenSource/pkgscripts-ng.git /opt/toolkit/pkgscripts-ng
+          fi
+          if ! sudo TOOLKIT_DIR=/opt/toolkit bash tools/build_spk_native.sh ${ARCHS} > /tmp/build.log 2>&1; then
+            echo "===== BUILD FAILED. Last 120 lines: ====="
+            tail -120 /tmp/build.log
+            exit 1
+          fi
+          echo "===== BUILD OK ====="
+          tail -20 /tmp/build.log
+          df -h / | tail -1
+          # Restore ownership of artifacts to the runner user for later steps.
+          sudo chown -R "$USER:$USER" dist/
+
+      - name: Expose build log on failure
+        if: failure()
+        run: |
+          {
+            echo "=== Build log tail (last 200 lines) ==="
+            echo '```'
+            tail -200 /tmp/build.log
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          cp /tmp/build.log build-failure.log
+          git config user.name "Komari 社区"
+          git config user.email "inxen@users.noreply.github.com"
+          git add -f build-failure.log
+          git commit -m "ci: build failure log"
+          git push origin HEAD:refs/ci/build-log --force
+
+      - name: Run static checks
+        run: bash tests/check_static.sh dist
+
+      - name: Compute SHA256 checksums
+        run: |
+          (cd dist && sha256sum *.spk) | tee /tmp/spk.sha256
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          VERSION="${{ steps.version.outputs.spk_version }}"
+          TAG="v${VERSION}"
+          UPSTREAM="${{ steps.version.outputs.version }}"
+
+          NOTES=$(cat <<EOF
+          Komari Agent **${VERSION}** for Synology DSM 7.x
+
+          Upstream komari-agent: [${UPSTREAM}](https://github.com/komari-monitor/komari-agent/releases/tag/${UPSTREAM})
+
+          ## 架构 / Architecture
+          - \`KomariAgent-x86_64-${VERSION}.spk\` (Intel/AMD)
+          - \`KomariAgent-armv8-${VERSION}.spk\` (ARM 64-bit)
+          - \`KomariAgent-armv7-${VERSION}.spk\` (ARM 32-bit)
+
+          ## SHA256
+          $(sed 's/^/    /' /tmp/spk.sha256)
+
+          ## 安装
+          在 DSM 套件中心点击"手动安装"，选择对应架构的 .spk 文件即可。
+          EOF
+          )
+
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "Release $TAG already exists; uploading assets."
+            gh release upload "$TAG" dist/*.spk --clobber
+          else
+            gh release create "$TAG" dist/*.spk \
+              --title "Komari Agent ${VERSION}" \
+              --notes "$NOTES"
+          fi
+
+      - name: Commit VERSION bump
+        run: |
+          if git diff --quiet VERSION; then
+            echo "VERSION unchanged; nothing to commit."
+            exit 0
+          fi
+          git config user.name "Komari 社区"
+          git config user.email "inxen@users.noreply.github.com"
+          git add VERSION
+          git commit -m "chore: track upstream komari-agent v${{ steps.version.outputs.version }}"
+          git push origin HEAD:${{ github.event.repository.default_branch }}
+
+      - name: Upload SPK artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: komari-agent-spk
+          path: dist/*.spk
+          if-no-files-found: error

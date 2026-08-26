@@ -1,0 +1,137 @@
+#!/bin/bash
+#
+# SynoBuildConf/install - Pack Stage script for Komari Agent.
+#
+# Executed by PkgCreate.py inside the Synology chroot, working directory is
+# /source/${project}. This script:
+#   1. Creates the inner package tarball (agent binary + config example).
+#   2. Assembles the SPK source directory (INFO + scripts + conf + icons).
+#   3. Creates package.tgz and the final .spk via official pkg_util.sh.
+#
+# Expected layout:
+#   /source/${project}/
+#     INFO.sh
+#     scripts/*            (postinst, preupgrade, start-stop-status, ...)
+#     conf/*               (privilege, resource)
+#     PACKAGE_ICON*.PNG
+#     downloads/komari-agent   <- the agent binary (already downloaded by
+#                                 tools/download-agent.sh on the host)
+
+set -e
+
+# The official pkg_util.sh helper library.
+source /pkgscripts-ng/include/pkg_util.sh
+
+# Where the project lives inside the chroot.
+PROJECT_DIR="$(pwd)"
+
+# Working directory for the SPK source tree.
+PKG_DIR=/tmp/_spk
+rm -rf "$PKG_DIR"
+mkdir -p "$PKG_DIR"
+
+# Inner package (package.tgz) staging directory. Everything under here gets
+# extracted to ${SYNOPKG_PKGDEST} (= /var/packages/KomariAgent/target).
+INNER_DIR=/tmp/_inner
+rm -rf "$INNER_DIR"
+mkdir -p "$INNER_DIR"
+
+# ---------------------------------------------------------------------------
+# 1. Build the inner package (package.tgz)
+# ---------------------------------------------------------------------------
+# Select the correct upstream binary for the architecture family we are
+# building for. Map family -> upstream asset name.
+case "$(pkg_get_platform_family)" in
+    x86_64) AGENT_ASSET="komari-agent-linux-amd64" ;;
+    armv7)  AGENT_ASSET="komari-agent-linux-arm" ;;
+    armv8)  AGENT_ASSET="komari-agent-linux-arm64" ;;
+    *)
+        echo "Unsupported platform family: $(pkg_get_platform_family)" >&2
+        exit 1
+        ;;
+esac
+
+# Locate the pre-downloaded binary.
+AGENT_SRC="$PROJECT_DIR/downloads/$AGENT_ASSET"
+if [ ! -f "$AGENT_SRC" ]; then
+    echo "Agent binary not found: $AGENT_SRC" >&2
+    echo "Please run tools/download-agent.sh first (or make download)." >&2
+    exit 1
+fi
+
+# Install the binary into the package.
+mkdir -p "$INNER_DIR/bin"
+cp -f "$AGENT_SRC" "$INNER_DIR/bin/komari-agent"
+chmod 755 "$INNER_DIR/bin/komari-agent"
+
+# Install the example configuration (never the user's real config). Runtime
+# data (config.json/logs/data) lives in the persistent @appdata dir instead.
+mkdir -p "$INNER_DIR/var"
+if [ -f "$PROJECT_DIR/config/config.example.json" ]; then
+    cp -f "$PROJECT_DIR/config/config.example.json" "$INNER_DIR/var/config.example.json"
+fi
+
+# Install the DSM web UI (dsmuidir). DSM serves/loads these files via its own
+# web server on the DSM port (no extra port needed). config is the App Config
+# (DSM reads the "Main.js" key to load the ExtJS window app), Main.js defines
+# the DSM native window, index.html is the config editor, and config.cgi is the
+# config I/O backend.
+if [ -d "$PROJECT_DIR/ui" ]; then
+    rm -rf "$INNER_DIR/ui"
+    mkdir -p "$INNER_DIR/ui"
+    cp -a "$PROJECT_DIR/ui"/config "$PROJECT_DIR/ui"/Main.js \
+        "$PROJECT_DIR/ui"/index.html "$PROJECT_DIR/ui"/config.cgi \
+        "$PROJECT_DIR/ui"/images "$INNER_DIR/ui/"
+    chmod 755 "$INNER_DIR/ui" "$INNER_DIR/ui"/images "$INNER_DIR/ui"/config.cgi
+    chmod 644 "$INNER_DIR/ui"/config "$INNER_DIR/ui"/Main.js \
+        "$INNER_DIR/ui"/index.html "$INNER_DIR/ui"/images/* 2>/dev/null || true
+fi
+
+# Create package.tgz.
+pkg_make_package "$INNER_DIR" "$PKG_DIR"
+
+# ---------------------------------------------------------------------------
+# 2. Assemble the SPK source directory
+# ---------------------------------------------------------------------------
+# Copy Package Center lifecycle scripts.
+mkdir -p "$PKG_DIR/scripts"
+cp -av "$PROJECT_DIR"/scripts/* "$PKG_DIR/scripts/"
+chmod 755 "$PKG_DIR"/scripts/*
+
+# Copy conf (privilege / resource).
+if [ -d "$PROJECT_DIR/conf" ]; then
+    cp -av "$PROJECT_DIR/conf" "$PKG_DIR/"
+fi
+
+# Copy wizard UI files (install/upgrade/uninstall). These are read by DSM's
+# Package Center to show configuration dialogs during install/upgrade/uninstall.
+if [ -d "$PROJECT_DIR/WIZARD_UIFILES" ]; then
+    cp -av "$PROJECT_DIR/WIZARD_UIFILES" "$PKG_DIR/"
+fi
+
+# Copy package icons (optional but recommended).
+if [ -f "$PROJECT_DIR/PACKAGE_ICON.PNG" ]; then
+    cp -f "$PROJECT_DIR/PACKAGE_ICON.PNG" "$PKG_DIR/"
+fi
+if [ -f "$PROJECT_DIR/PACKAGE_ICON_256.PNG" ]; then
+    cp -f "$PROJECT_DIR/PACKAGE_ICON_256.PNG" "$PKG_DIR/"
+fi
+
+# Generate the INFO file by sourcing INFO.sh (defines the metadata) and then
+# dumping it via pkg_dump_info.
+source "$PROJECT_DIR/INFO.sh"
+pkg_dump_info > "$PKG_DIR/INFO"
+cp "$PKG_DIR/INFO" "$PROJECT_DIR/INFO"
+
+# ---------------------------------------------------------------------------
+# 3. Create the final .spk
+# ---------------------------------------------------------------------------
+mkdir -p /image/packages
+pkg_make_spk "$PKG_DIR" "/image/packages" "$(pkg_get_spk_family_name)"
+
+echo "SPK built successfully."
+
+# Also copy the resulting spk back into the project dist/ folder so it is
+# easy to grab from the host.
+mkdir -p "$PROJECT_DIR/dist"
+cp -f /image/packages/*.spk "$PROJECT_DIR/dist/" 2>/dev/null || true

@@ -1,0 +1,11 @@
+#!/bin/bash
+#
+# preinst - run before the package files are extracted.
+#
+# Runtime data (config.json, logs, data) lives in ${SYNOPKG_PKGVAR}, which DSM
+# maps to /volume1/@appdata/KomariAgent - a directory outside the target tree
+# that DSM preserves during upgrade/overwrite and uninstall. Therefore nothing
+# needs to be backed up here: an existing config survives extraction of the
+# new package into @appstore automatically.
+
+exit 0

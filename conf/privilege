@@ -1,0 +1,13 @@
+{
+  "defaults": {
+    "run-as": "package"
+  },
+  "username": "sc-KomariAgent",
+  "groupname": "sc-KomariAgent",
+  "tool": [{
+    "relpath": "bin/komari-agent",
+    "user": "package",
+    "group": "package",
+    "permission": "0755"
+  }]
+}

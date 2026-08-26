@@ -1,0 +1,11 @@
+# SHA256 checksums for official komari-agent Linux release binaries.
+#
+# Source: GitHub Release asset "digest" fields for tag 1.2.60
+#   https://api.github.com/repos/komari-monitor/komari-agent/releases/tags/1.2.60
+#
+# These are a fallback only - download-agent.sh prefers to fetch the digest
+# live from the GitHub API. Update when bumping the upstream version.
+
+113af112a914b918f315fa6cd3a98e8c0f932900f776c4c412b2a79477180859  komari-agent-linux-amd64
+8d98966365848435f756d00435b42654d56557f5f783c4b16ba83ed413038007  komari-agent-linux-arm64
+9c8c96ba686b4a8d442642ab55d87ab832cf67bbc238208514353e9c891b60e1  komari-agent-linux-arm

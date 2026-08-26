@@ -1,0 +1,165 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Komari Agent 配置</title>
+<style>
+* { box-sizing: border-box; }
+html, body {
+  margin: 0; padding: 0; height: 100%;
+  font-family: "Helvetica Neue", Helvetica, "PingFang SC", "Microsoft YaHei", Arial, sans-serif;
+  font-size: 14px; color: #4d4d4d; background: #f7f7f7;
+}
+.ka-page { display: flex; flex-direction: column; height: 100vh; padding: 12px 16px; }
+.ka-toolbar { display: flex; align-items: center; gap: 8px; padding-bottom: 10px; }
+.ka-spacer { flex: 1; }
+.ka-btn {
+  padding: 7px 16px; font-size: 14px; color: #4d4d4d; background: #fff;
+  border: 1px solid #c4c4c4; border-radius: 3px; cursor: pointer;
+}
+.ka-btn:hover { background: #f6f6f6; }
+.ka-btn-primary { color: #fff; background: #5a8dee; border-color: #4a7de0; }
+.ka-btn-primary:hover { background: #4a7de0; }
+.ka-btn[disabled] { opacity: .6; cursor: not-allowed; }
+.ka-status { font-size: 13px; padding: 4px 6px; margin-bottom: 8px; min-height: 20px; }
+.ka-status.ok { color: #28a745; }
+.ka-status.err { color: #d9534f; }
+.ka-status.info { color: #5a8dee; }
+.ka-editor-wrap { flex: 1; min-height: 0; display: flex; background: #fff; border: 1px solid #d0d0d0; border-radius: 3px; overflow: hidden; }
+.ka-editor {
+  flex: 1; width: 100%; height: 100%; padding: 12px 14px;
+  font-family: "SF Mono", "Consolas", "Menlo", monospace; font-size: 13px; line-height: 1.5;
+  color: #333; background: #fdfdfd; border: 0; outline: none; resize: none;
+  white-space: pre; overflow: auto; tab-size: 2;
+}
+.ka-hint { padding-top: 8px; font-size: 12px; color: #999; }
+.ka-hint code { background: #e8e8e8; padding: 1px 5px; border-radius: 2px; font-size: 11px; }
+</style>
+</head>
+<body>
+<div class="ka-page">
+  <div class="ka-toolbar">
+    <button type="button" class="ka-btn" id="btn-default" title="恢复为默认配置（不保存）">恢复默认</button>
+    <button type="button" class="ka-btn" id="btn-revert" title="恢复到最近保存的配置（不重启）">撤销修改</button>
+    <span class="ka-spacer"></span>
+    <button type="button" class="ka-btn ka-btn-primary" id="btn-save" title="校验并保存（不重启）">保存配置</button>
+    <button type="button" class="ka-btn ka-btn-primary" id="btn-apply" title="校验、保存并重启 Agent">应用配置</button>
+  </div>
+  <div class="ka-status" id="ka-status"></div>
+  <div class="ka-editor-wrap">
+    <textarea id="ka-editor" class="ka-editor" spellcheck="false" placeholder="{ }"></textarea>
+  </div>
+  <div class="ka-hint">配置文件：<code>/var/packages/KomariAgent/var/config.json</code> &nbsp;·&nbsp; token 受保护，不进入 URL/日志/命令行。</div>
+</div>
+<script>
+(function () {
+  'use strict';
+  var CGI = 'config.cgi';
+  var editor = document.getElementById('ka-editor');
+  var statusEl = document.getElementById('ka-status');
+  var savedJson = null;
+
+  function setStatus(msg, type) {
+    statusEl.textContent = msg || '';
+    statusEl.className = 'ka-status ' + (type || 'info');
+  }
+
+  function getSynoToken() {
+    // Best-effort CSRF token fetch. In an already-logged-in DSM session
+    // login.cgi may not return a SynoToken; that's fine, the CGI authenticates
+    // via the DSM session cookie instead. Resolve with '' on any failure.
+    return new Promise(function (resolve) {
+      var xhr = new XMLHttpRequest();
+      xhr.open('GET', '/webman/login.cgi', true);
+      xhr.onload = function () {
+        var token = '';
+        if (xhr.status === 200) {
+          try { token = JSON.parse(xhr.responseText).SynoToken || ''; }
+          catch (e) { token = ''; }
+        }
+        resolve(token);
+      };
+      xhr.onerror = function () { resolve(''); };
+      xhr.send();
+    });
+  }
+
+  function callApi(payload) {
+    return getSynoToken().then(function (token) {
+      return new Promise(function (resolve, reject) {
+        var xhr = new XMLHttpRequest();
+        xhr.open('POST', CGI, true);
+        xhr.setRequestHeader('Content-Type', 'application/json');
+        if (token) xhr.setRequestHeader('X-SYNO-TOKEN', token);
+        xhr.onreadystatechange = function () {
+          if (xhr.readyState !== 4) return;
+          var resp = null;
+          try { resp = JSON.parse(xhr.responseText); } catch (e) { resp = null; }
+          if (xhr.status !== 200 || !resp || !resp.success) {
+            reject(resp && resp.message ? resp.message : '请求失败 (HTTP ' + xhr.status + ')');
+            return;
+          }
+          resolve(resp);
+        };
+        xhr.send(JSON.stringify(payload));
+      });
+    });
+  }
+
+  function readConfig() {
+    setStatus('正在读取配置...', 'info');
+    callApi({ action: 'read' }).then(function (resp) {
+      savedJson = resp.config || {};
+      editor.value = JSON.stringify(savedJson, null, 2);
+      setStatus('已加载当前配置。', 'ok');
+    }).catch(function (err) { setStatus('读取失败：' + err, 'err'); });
+  }
+
+  function validateEditor() {
+    try {
+      var obj = JSON.parse(editor.value);
+      if (typeof obj !== 'object' || obj === null || Array.isArray(obj)) {
+        setStatus('配置必须是 JSON 对象。', 'err'); return null;
+      }
+      return obj;
+    } catch (e) { setStatus('JSON 格式错误：' + e.message, 'err'); return null; }
+  }
+
+  function saveConfig(apply) {
+    var obj = validateEditor();
+    if (!obj) return;
+    if (typeof obj.interval !== 'undefined') {
+      var iv = Number(obj.interval);
+      if (isNaN(iv) || iv <= 0) { setStatus('"interval" 必须是正数。', 'err'); return; }
+      obj.interval = iv;
+    }
+    var btn = document.getElementById(apply ? 'btn-apply' : 'btn-save');
+    var orig = btn.textContent;
+    btn.disabled = true;
+    btn.textContent = apply ? '应用中...' : '保存中...';
+    setStatus(apply ? '正在保存并重启 Agent...' : '正在保存配置...', 'info');
+    callApi({ action: apply ? 'apply' : 'save', config: obj }).then(function (resp) {
+      savedJson = resp.config || obj;
+      editor.value = JSON.stringify(savedJson, null, 2);
+      setStatus(resp.message || (apply ? '配置已保存并应用。' : '配置已保存。'), 'ok');
+    }).catch(function (err) { setStatus('操作失败：' + err, 'err'); })
+      .then(function () { btn.disabled = false; btn.textContent = orig; });
+  }
+
+  document.getElementById('btn-default').addEventListener('click', function () {
+    setStatus('正在获取默认配置...', 'info');
+    callApi({ action: 'default' }).then(function (resp) {
+      editor.value = JSON.stringify(resp.config || {}, null, 2);
+      setStatus('已载入默认配置（未保存）。', 'info');
+    }).catch(function (err) { setStatus('获取默认配置失败：' + err, 'err'); });
+  });
+  document.getElementById('btn-revert').addEventListener('click', readConfig);
+  document.getElementById('btn-save').addEventListener('click', function () { saveConfig(false); });
+  document.getElementById('btn-apply').addEventListener('click', function () { saveConfig(true); });
+
+  readConfig();
+})();
+</script>
+</body>
+</html>

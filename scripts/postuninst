@@ -1,0 +1,31 @@
+#!/bin/bash
+#
+# postuninst - run after the package is removed from the system.
+#
+# By default we PRESERVE user configuration and data so a mistaken uninstall
+# does not destroy the agent setup. The uninstall wizard (WIZARD_UIFILES/
+# uninstall_uifile) exposes a keep/delete singleselect:
+#   - "wizard_keep_config" selected  -> keep config and data
+#   - "wizard_delete_config" selected -> remove config and data
+# If the wizard did not run (silent path / CLI uninstall) we default to keep.
+
+SYNOPKG_PKGDEST="${SYNOPKG_PKGDEST:-/var/packages/KomariAgent/target}"
+SYNOPKG_PKGVAR="${SYNOPKG_PKGVAR:-/var/packages/KomariAgent/var}"
+
+# Clean up the PID file only (transient runtime state).
+rm -f "$SYNOPKG_PKGVAR/komari-agent.pid" 2>/dev/null || true
+
+KEEP_CONFIG=1
+if [ "${wizard_delete_config:-}" = "true" ]; then
+    KEEP_CONFIG=0
+fi
+
+if [ "$KEEP_CONFIG" = "1" ]; then
+    echo "[postuninst] Kept configuration and data in ${SYNOPKG_PKGVAR}"
+else
+    echo "[postuninst] Removing Komari Agent configuration and data..."
+    rm -rf "$SYNOPKG_PKGVAR/config.json" "$SYNOPKG_PKGVAR/log" \
+        "$SYNOPKG_PKGVAR/data" 2>/dev/null || true
+fi
+
+exit 0

@@ -1,0 +1,16 @@
+[{
+  "step_title": "卸载 Komari Agent",
+  "items": [{
+    "type": "singleselect",
+    "desc": "保留或删除套件配置数据",
+    "subitems": [{
+      "key": "wizard_keep_config",
+      "desc": "<b>仅卸载。</b> 保留现有配置和数据，方便以后重新安装时沿用设置。",
+      "defaultValue": true
+    }, {
+      "key": "wizard_delete_config",
+      "desc": "<b style=\"color: red\">删除所有套件配置和数据。（不可恢复）</b>",
+      "defaultValue": false
+    }]
+  }]
+}]

@@ -1,0 +1,78 @@
+#!/bin/bash
+#
+# postupgrade - run after the new version's files are in place.
+#
+# Runtime data lives in ${SYNOPKG_PKGVAR} (= /var/packages/KomariAgent/var ->
+# /volume1/@appdata/KomariAgent), which DSM preserves across upgrades and
+# uninstalls. This script:
+#   1. Migrates data from the OLD layout (target/var, i.e. @appstore/var) if
+#      this is the first upgrade from a pre-1.2.60-6 install.
+#   2. Ensures runtime directories exist.
+#   3. Re-applies wizard values (currently none; upgrade is silent) and pins
+#      disable_auto_update=true.
+# The agent is started by the Package Center via start-stop-status (under the
+# package user), not directly from here, so it is never launched as root.
+
+SYNOPKG_PKGNAME="${SYNOPKG_PKGNAME:-KomariAgent}"
+SYNOPKG_PKGDEST="${SYNOPKG_PKGDEST:-/var/packages/KomariAgent/target}"
+SYNOPKG_PKGVAR="${SYNOPKG_PKGVAR:-/var/packages/KomariAgent/var}"
+# Runtime service user defined in conf/privilege (username).
+SERVICE_USER="${SERVICE_USER:-sc-KomariAgent}"
+TEMP_UPGRADE="${SYNOPKG_TEMP_UPGRADE_FOLDER:-${SYNOPKG_PKGDEST}.upgrade}"
+
+# Load the wizard config helpers (they live next to this script in the SPK
+# scripts/ folder, deployed by DSM to /var/packages/<pkg>/scripts/).
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+# shellcheck source=/dev/null
+. "$SCRIPT_DIR/wizard-config.sh" 2>/dev/null || true
+
+VAR_DIR="$SYNOPKG_PKGVAR"
+CONFIG_FILE="$VAR_DIR/config.json"
+
+# 1. Migration from the old layout (config lived in target/var before
+#    1.2.60-6). DSM's preupgrade copied the old target/var into the temp
+#    upgrade folder; move any existing user data from there (or from the old
+#    target/var directly) into the persistent @appdata dir.
+if [ ! -f "$CONFIG_FILE" ]; then
+    if [ -d "$TEMP_UPGRADE/var" ]; then
+        mkdir -p "$VAR_DIR"
+        cp -a "$TEMP_UPGRADE/var/." "$VAR_DIR/"
+        echo "[postupgrade] Migrated config/data from upgrade backup to $VAR_DIR"
+        rm -rf "$TEMP_UPGRADE" 2>/dev/null || true
+    elif [ -d "$SYNOPKG_PKGDEST/var" ] && [ -f "$SYNOPKG_PKGDEST/var/config.json" ]; then
+        mkdir -p "$VAR_DIR"
+        cp -a "$SYNOPKG_PKGDEST/var/." "$VAR_DIR/"
+        echo "[postupgrade] Migrated config/data from old target/var to $VAR_DIR"
+    fi
+fi
+
+# 2. Ensure runtime directories and binary permissions are correct.
+mkdir -p "$VAR_DIR/log" "$VAR_DIR/data"
+chmod 755 "$SYNOPKG_PKGDEST/bin/komari-agent"
+
+# 3. Provision a default config only when none exists yet (fresh upgrade path).
+if [ ! -f "$CONFIG_FILE" ]; then
+    if [ -f "$SYNOPKG_PKGDEST/var/config.example.json" ]; then
+        cp -f "$SYNOPKG_PKGDEST/var/config.example.json" "$CONFIG_FILE"
+    else
+        echo '{}' > "$CONFIG_FILE"
+    fi
+    chmod 600 "$CONFIG_FILE"
+fi
+
+# Re-apply wizard-provided upgrade values (currently none; upgrade silent).
+if [ -f "$CONFIG_FILE" ] && type apply_wizard_config >/dev/null 2>&1; then
+    apply_wizard_config "$CONFIG_FILE"
+    echo "[postupgrade] Applied wizard configuration."
+fi
+chmod 600 "$CONFIG_FILE"
+
+# Ensure runtime files belong to the package user so the agent (running as the
+# package user) can write its log, pid and config.
+chown -R "${SERVICE_USER}:${SERVICE_USER}" "$VAR_DIR" 2>/dev/null || true
+chown "${SERVICE_USER}:${SERVICE_USER}" "$SYNOPKG_PKGDEST/bin/komari-agent" 2>/dev/null || true
+
+# NOTE: do not start the agent here. Package Center restarts it after upgrade
+# using start-stop-status, which runs under the configured package user.
+
+exit 0

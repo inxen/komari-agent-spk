@@ -1,0 +1,16 @@
+#!/bin/bash
+#
+# preuninst - run before the package is removed.
+#
+# Stop the running agent. User config/data in var/ are intentionally kept:
+# the default behaviour is to NOT delete user data on uninstall (see README).
+
+SYNOPKG_PKGNAME="${SYNOPKG_PKGNAME:-KomariAgent}"
+SCRIPTS_DIR="/var/packages/${SYNOPKG_PKGNAME}/scripts"
+
+# Stop the service if it is running.
+if [ -x "$SCRIPTS_DIR/start-stop-status" ]; then
+    "$SCRIPTS_DIR/start-stop-status" stop || true
+fi
+
+exit 0

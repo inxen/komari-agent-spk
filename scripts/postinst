@@ -1,0 +1,63 @@
+#!/bin/bash
+#
+# postinst - run after the package files are extracted to ${SYNOPKG_PKGDEST}.
+#
+# Runtime data (config.json, logs, data) lives in ${SYNOPKG_PKGVAR}, which DSM
+# maps to /volume1/@appdata/KomariAgent. That directory survives uninstall
+# (unlike @appstore/target), so user config is preserved by default and the
+# uninstall wizard can choose to delete it. Because @appdata is outside the
+# target tree, DSM never wipes it during upgrade/overwrite - no backup dance
+# is needed here.
+#
+# The package runs with run-as:package (see conf/privilege), so all runtime
+# files are owned by the package user. The service itself is started by the
+# Package Center via start-stop-status, not from here, so the agent is never
+# launched as root.
+
+SYNOPKG_PKGNAME="${SYNOPKG_PKGNAME:-KomariAgent}"
+SYNOPKG_PKGDEST="${SYNOPKG_PKGDEST:-/var/packages/KomariAgent/target}"
+SYNOPKG_PKGVAR="${SYNOPKG_PKGVAR:-/var/packages/KomariAgent/var}"
+# Runtime service user defined in conf/privilege (username).
+SERVICE_USER="${SERVICE_USER:-sc-KomariAgent}"
+
+VAR_DIR="$SYNOPKG_PKGVAR"
+CONFIG_FILE="$VAR_DIR/config.json"
+
+# Load the wizard config helpers (they live next to this script in the SPK
+# scripts/ folder, deployed by DSM to /var/packages/<pkg>/scripts/).
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+# shellcheck source=/dev/null
+. "$SCRIPT_DIR/wizard-config.sh" 2>/dev/null || true
+
+# Ensure runtime directories exist in the persistent data dir.
+mkdir -p "$VAR_DIR/log" "$VAR_DIR/data"
+
+# Provision a default config only when none exists yet (fresh install).
+if [ ! -f "$CONFIG_FILE" ]; then
+    if [ -f "$SYNOPKG_PKGDEST/var/config.example.json" ]; then
+        cp -f "$SYNOPKG_PKGDEST/var/config.example.json" "$CONFIG_FILE"
+    else
+        echo '{}' > "$CONFIG_FILE"
+    fi
+    chmod 600 "$CONFIG_FILE"
+    echo "[postinst] Created default config at $CONFIG_FILE"
+fi
+
+# Apply wizard-provided values (currently none: install is silent). This also
+# pins disable_auto_update=true so the SPK owns the agent version.
+if [ -f "$CONFIG_FILE" ] && type apply_wizard_config >/dev/null 2>&1; then
+    apply_wizard_config "$CONFIG_FILE"
+    echo "[postinst] Applied wizard configuration."
+fi
+
+chmod 600 "$CONFIG_FILE"
+
+# Ensure the runtime files belong to the package user so the agent (running as
+# the package user) can write its log, pid and config.
+chown -R "${SERVICE_USER}:${SERVICE_USER}" "$VAR_DIR" 2>/dev/null || true
+chown "${SERVICE_USER}:${SERVICE_USER}" "$SYNOPKG_PKGDEST/bin/komari-agent" 2>/dev/null || true
+
+# NOTE: do not start the agent here. Package Center starts it after install
+# using start-stop-status, which runs under the configured package user.
+
+exit 0

@@ -1,0 +1,11 @@
+#!/bin/bash
+#
+# SynoBuildConf/build - Build Stage script for Komari Agent.
+#
+# We ship the official upstream prebuilt static Linux binary, so there is
+# nothing to compile here. This script intentionally does nothing.
+#
+# The binary is fetched on the host by tools/download-agent.sh and reused by
+# SynoBuildConf/install during the Pack Stage.
+
+exit 0

@@ -1,0 +1,18 @@
+{
+  "endpoint": "https://your-komari-server.example.com",
+  "token": "your-agent-token",
+  "interval": 3,
+  "disable_auto_update": true,
+  "disable_web_ssh": false,
+  "ignore_unsafe_cert": false,
+  "include_nics": "",
+  "exclude_nics": "",
+  "include_mountpoints": "",
+  "month_rotate": 0,
+  "auto_discovery_key": "",
+  "custom_dns": "",
+  "enable_gpu": false,
+  "protocol_version": 2,
+  "disable_compression": false,
+  "prefer_ip_version": ""
+}

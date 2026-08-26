@@ -1,0 +1,18 @@
+#!/bin/bash
+#
+# preupgrade - run before the new version's files replace the old ones.
+#
+# Runtime data lives in ${SYNOPKG_PKGVAR} (/volume1/@appdata/KomariAgent),
+# outside the target tree, so it is preserved automatically across upgrades -
+# nothing needs to be backed up here. (Older installs kept config in
+# target/var; postupgrade migrates it on the first upgrade.)
+
+SYNOPKG_PKGNAME="${SYNOPKG_PKGNAME:-KomariAgent}"
+
+# Stop the running agent so files can be safely replaced.
+SCRIPTS_DIR="/var/packages/${SYNOPKG_PKGNAME:-KomariAgent}/scripts"
+if [ -x "$SCRIPTS_DIR/start-stop-status" ]; then
+    "$SCRIPTS_DIR/start-stop-status" stop || true
+fi
+
+exit 0

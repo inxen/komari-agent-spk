@@ -1,0 +1,23 @@
+{
+    "Main.js": {
+        "SYNO.SDS.App.KomariAgent.Instance": {
+            "type": "app",
+            "version": "1.2.60",
+            "desc": "Komari Agent",
+            "icon": "images/icon_{0}.png",
+            "title": "Komari Agent",
+            "texts": "texts",
+            "allowMultiInstance": false,
+            "waterfallLoadTexts": true,
+            "appWindow": "SYNO.SDS.App.KomariAgent.Main",
+            "depend": []
+        },
+        "SYNO.SDS.App.KomariAgent.Main": {
+            "type": "lib",
+            "title": "Komari Agent",
+            "icon": "images/icon_{0}.png",
+            "texts": "texts",
+            "depend": []
+        }
+    }
+}

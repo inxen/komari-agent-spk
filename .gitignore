@@ -1,0 +1,27 @@
+# Build artifacts
+dist/
+pkg_work/
+INFO
+downloads/
+toolkit-cache/
+
+# Python cache
+__pycache__/
+*.pyc
+
+# Logs / temp
+*.log
+*.pid
+
+# Privacy protection: never track credentials/keys
+*.pem
+*.key
+*.env
+id_rsa
+id_ed25519
+passwd*
+*secret*
+.ssh/
+
+# Local-only docs (not part of the public package)
+*Komari Agent Synology SPK 开发需求*
