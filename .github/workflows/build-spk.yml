@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: 'Upstream komari-agent version (e.g. 1.2.61). Empty = use VERSION file.'
+        description: 'Upstream komari-agent version, e.g. 1.5.11, or "latest" for the newest release. A leading "v" / trailing "-<rev>" is tolerated. Empty = use VERSION file.'
         required: false
         default: ''
       archs:
@@ -30,31 +30,86 @@ jobs:
       IS_PUSH_TAG: ${{ startsWith(github.ref, 'refs/tags/') }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Resolve version
         id: version
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
-          CUR=$(head -n1 VERSION | tr -d '[:space:]')
-          UP="${CUR%%-*}"
-          REV="${CUR##*-}"
-          REV="${REV:-1}"
+          set -euo pipefail
 
-          if [ -n "$DISPATCH_VERSION" ]; then
-            # workflow_dispatch: input is the upstream version.
-            TARGET="$DISPATCH_VERSION"
-            SPK="${TARGET}-${REV}"
-          elif [ "$IS_PUSH_TAG" = "true" ]; then
+          # VERSION file format is "<upstream>-<revision>", e.g. 1.2.60-1.
+          # A bare "<upstream>" is also accepted (revision then defaults to 1).
+          CUR="$(head -n1 VERSION | tr -d '[:space:]')"
+          if [[ "$CUR" == *-* ]]; then
+            UP="${CUR%%-*}"
+            CUR_REV="${CUR##*-}"
+          else
+            UP="$CUR"
+            CUR_REV="1"
+          fi
+          [[ -n "$CUR_REV" ]] || CUR_REV="1"
+
+          # Resolve the upstream tag (TARGET) and, when the caller stated one,
+          # the SPK revision (REV_EXPLICIT).
+          REV_EXPLICIT=""
+          RAW="$(printf '%s' "${DISPATCH_VERSION:-}" | tr -d '[:space:]')"
+          if [ -n "$RAW" ]; then
+            # workflow_dispatch: the input is an upstream version. Tolerate the
+            # shapes people actually paste - "v1.5.11" and "1.5.11-2" - instead
+            # of turning them into a 404 on the release asset URL.
+            RAW="${RAW#v}"
+            RAW="${RAW#V}"
+            # "latest" -> newest upstream x.y.z we can package (see
+            # tools/latest-version.sh). Costs reproducibility, so only when
+            # explicitly asked for; pin a version for a reproducible release.
+            if [ "$(printf '%s' "$RAW" | tr '[:upper:]' '[:lower:]')" = "latest" ]; then
+              RAW="$(./tools/latest-version.sh)"
+              echo "resolved 'latest' -> ${RAW}"
+            fi
+            TARGET="${RAW%%-*}"
+            if [[ "$RAW" == *-* ]]; then
+              REV_EXPLICIT="${RAW#*-}"
+            fi
+          elif [ "${IS_PUSH_TAG:-false}" = "true" ]; then
             # push tag v<SPK_VERSION> (e.g. v1.2.60-1): use it verbatim.
-            SPK="${GITHUB_REF_NAME#v}"
-            TARGET="${SPK%%-*}"
+            TAG="${GITHUB_REF_NAME:-}"
+            TAG="${TAG#v}"
+            TARGET="${TAG%%-*}"
+            if [[ "$TAG" == *-* ]]; then
+              REV_EXPLICIT="${TAG#*-}"
+            fi
           else
             # No input: build whatever VERSION currently tracks.
             TARGET="$UP"
-            SPK="$CUR"
           fi
 
-          echo "target upstream=$TARGET spk_version=$SPK"
+          # Revision: an explicit one always wins. Otherwise keep the current
+          # revision only when rebuilding the same upstream version (packaging
+          # fix); when the upstream version changes, restart at 1.
+          if [ -n "$REV_EXPLICIT" ]; then
+            REV="$REV_EXPLICIT"
+          elif [ "$TARGET" = "$UP" ]; then
+            REV="$CUR_REV"
+          else
+            REV="1"
+          fi
+
+          SPK="${TARGET}-${REV}"
+
+          # Fail here, with an actionable message, rather than a bare curl 404
+          # in the download step a second later.
+          if [[ ! "$TARGET" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::Cannot resolve a valid upstream version from '${DISPATCH_VERSION:-}' (got '$TARGET'). Use e.g. 1.5.11 or latest."
+            exit 1
+          fi
+          if [[ ! "$SPK" =~ ^[0-9]+\.[0-9]+\.[0-9]+-[0-9]+$ ]]; then
+            echo "::error::Resolved SPK version '$SPK' is not of the form <x.y.z>-<rev>."
+            exit 1
+          fi
+
+          echo "target upstream=$TARGET spk_version=$SPK (from '${DISPATCH_VERSION:-<VERSION file>}')"
           echo "version=$TARGET" >> "$GITHUB_OUTPUT"
           echo "spk_version=$SPK" >> "$GITHUB_OUTPUT"
 
@@ -63,8 +118,16 @@ jobs:
           printf '%s\n' "${{ steps.version.outputs.spk_version }}" > VERSION
           echo "VERSION -> $(cat VERSION)"
 
+      - name: Verify upstream release
+        run: make check-release
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+      # tee into /tmp/build.log as well, so that a download failure still lands
+      # in the failure diagnostics below (previously only the Toolkit build
+      # step wrote that file, so early failures published nothing at all).
       - name: Download agent binaries
-        run: make download
+        run: make download 2>&1 | tee /tmp/build.log
         env:
           GH_TOKEN: ${{ github.token }}
 
@@ -96,16 +159,39 @@ jobs:
           # Restore ownership of artifacts to the runner user for later steps.
           sudo chown -R "$USER:$USER" dist/
 
+      # Diagnostics only: this step must never be the reason a run is red, and
+      # it must cope with failures that happened before the build step (when
+      # /tmp/build.log does not exist).
       - name: Expose build log on failure
         if: failure()
+        continue-on-error: true
         run: |
+          LOG=/tmp/build.log
           {
-            echo "=== Build log tail (last 200 lines) ==="
-            echo '```'
-            tail -200 /tmp/build.log
-            echo '```'
-          } >> "$GITHUB_STEP_SUMMARY"
-          cp /tmp/build.log build-failure.log
+            echo "### Build failure diagnostics"
+            echo ""
+            echo "| field | value |"
+            echo "| --- | --- |"
+            echo "| upstream version | \`${{ steps.version.outputs.version }}\` |"
+            echo "| spk version | \`${{ steps.version.outputs.spk_version }}\` |"
+            echo "| requested archs | \`${ARCHS}\` |"
+            echo ""
+            if [ -f "$LOG" ]; then
+              echo "#### Log tail (last 200 lines)"
+              echo '```'
+              tail -200 "$LOG"
+              echo '```'
+            else
+              echo "_No builder log was produced: the failure happened before the Toolkit build step._"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY" || true
+
+          if [ ! -f "$LOG" ]; then
+            echo "No builder log to publish; see the step summary above."
+            exit 0
+          fi
+
+          cp "$LOG" build-failure.log
           git config user.name "Komari 社区"
           git config user.email "inxen@users.noreply.github.com"
           git add -f build-failure.log
@@ -118,6 +204,35 @@ jobs:
       - name: Compute SHA256 checksums
         run: |
           (cd dist && sha256sum *.spk) | tee /tmp/spk.sha256
+
+      # Publish the bumped VERSION first, so the release tag (created below)
+      # points at the commit that records it.
+      - name: Commit VERSION bump
+        run: |
+          if git diff --quiet VERSION; then
+            echo "VERSION unchanged; nothing to commit."
+            exit 0
+          fi
+          git config user.name "Komari 社区"
+          git config user.email "inxen@users.noreply.github.com"
+          git add VERSION
+          git commit -m "chore: track upstream komari-agent v${{ steps.version.outputs.version }}"
+          git push origin HEAD:${{ github.event.repository.default_branch }}
+
+      # A push-tag run already has `v<spk_version>` on the remote. A
+      # workflow_dispatch build of a *new* version (e.g. `version: latest`)
+      # does not, and `gh release create --verify-tag` aborts when the tag is
+      # missing - so create it here, at the commit we just built.
+      - name: Ensure release tag
+        run: |
+          TAG="v${{ steps.version.outputs.spk_version }}"
+          if git ls-remote --exit-code --tags origin "refs/tags/$TAG" >/dev/null 2>&1; then
+            echo "Tag $TAG already exists on the remote; leaving it untouched."
+            exit 0
+          fi
+          echo "Tag $TAG is missing; creating it at $(git rev-parse --short HEAD)."
+          git tag "$TAG"
+          git push origin "refs/tags/$TAG"
 
       - name: Create GitHub Release
         env:
@@ -151,27 +266,16 @@ jobs:
             echo "Release $TAG already exists; deleting and recreating."
             gh release delete "$TAG" --yes
           fi
-          # --verify-tag requires the tag to exist (it does - we were pushed
-          # via a tag). Do NOT use --cleanup-tag on delete, which would remove
-          # the tag and break this step.
+          # The tag is guaranteed to exist by the "Ensure release tag" step
+          # above, which is exactly what --verify-tag checks. Do NOT use
+          # --cleanup-tag on delete, which would remove the tag and break this
+          # step.
           gh release create "$TAG" dist/*.spk \
             --title "Komari Agent ${VERSION}" \
             --notes "$NOTES" \
             --verify-tag 2>&1
           echo "===== verification ====="
           gh release view "$TAG" --json name,tagName,assets -q '.name+" / "+.tagName+" / assets="+(.assets|length|tostring)'
-
-      - name: Commit VERSION bump
-        run: |
-          if git diff --quiet VERSION; then
-            echo "VERSION unchanged; nothing to commit."
-            exit 0
-          fi
-          git config user.name "Komari 社区"
-          git config user.email "inxen@users.noreply.github.com"
-          git add VERSION
-          git commit -m "chore: track upstream komari-agent v${{ steps.version.outputs.version }}"
-          git push origin HEAD:${{ github.event.repository.default_branch }}
 
       - name: Upload SPK artifacts
         uses: actions/upload-artifact@v4

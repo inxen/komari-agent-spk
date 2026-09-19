@@ -83,19 +83,33 @@ Komari Agent 是一款轻量级服务器监控客户端，可将 NAS 的系统�
 
 1. Actions → **Build Komari Agent SPK** → Run workflow
 2. 参数：
-   - `version`：komari-agent 版本 tag，如 `1.2.60`（留空 = 使用 `VERSION` 文件）
+   - `version`：komari-agent 上游版本 tag，如 `1.5.11`（留空 = 使用 `VERSION` 文件）
+     - 填 `latest`：自动取上游**最新可打包版本**（非预发布、非 `Snapshot-*` 的 `x.y.z`）
+     - 容错写法：`v1.5.11`、`1.5.11-1` 都会自动归一化为 `1.5.11`
+     - **填错会立刻失败**：workflow 会先校验该 tag 及其三架构 Linux 资产是否存在，不存在时直接报错并列出最近可用的 tag，不会再出现下载步骤里"1 秒挂掉、只有一句 curl 404"的情况
    - `archs`：架构（默认 `x86_64 armv7 armv8`）
-3. 构建成功自动发布 GitHub Release，附带三架构 `.spk` 与 SHA256
+3. 构建成功后自动创建 `v<版本>` 标签并发布 GitHub Release（标签已存在则复用），附带三架构 `.spk` 与 SHA256
 
 也可通过推送 tag 触发：`git tag v1.2.60-1 && git push origin v1.2.60-1`
 
-版本号规则：`{komari 版本}-{SPK 修订}`，如 `1.2.60-1`。Agent 版本不变时递增修订号，上游升级时跟随其版本。
+版本号规则：`{komari 版本}-{SPK 修订}`，如 `1.2.60-1`。上游版本变化时修订号从 `1` 重新开始；同一上游版本重打包则沿用当前修订号（要主动加修订号就写全，如 `1.5.11-2`）。
+
+> `version` 留空或填 `latest` 时产物取决于运行时上游的状态——**对外发布的版本建议填明确版本号**以保证可复现。
+
+构建失败时，诊断信息有两个去处：Run 页面的 **Summary**（含版本号与日志尾部），以及 `refs/ci/build-log` 分支上的 `build-failure.log`。该分支不是普通分支，本地查看：
+
+```bash
+git fetch origin 'refs/ci/build-log:refs/remotes/origin/ci-build-log'
+git show origin/ci-build-log:build-failure.log
+```
 
 ## 本地构建
 
 前置：Linux x86_64 主机，root/sudo 权限，`git`、`python3`、`xz-utils`、`curl`/`wget`。
 
 ```bash
+make latest         # 打印上游最新可打包版本
+make check-release  # 校验上游 release 与三架构资产是否存在（CHECK_VERSION=latest 亦可）
 make download    # 下载并校验上游二进制（SHA256）
 make package     # 原生运行 Synology pkgscripts-ng 构建（需 sudo）
 make test        # 静态 / 解包 / 架构检查
@@ -124,6 +138,8 @@ komari-agent/
 ├── WIZARD_UIFILES/uninstall_uifile  # 卸载选项（保留/删除配置）
 ├── SynoBuildConf/install    # Pack Stage 主脚本
 ├── tools/
+│   ├── latest-version.sh    # 上游最新可打包版本（latest 的解析实现）
+│   ├── verify-release.sh    # 上游 release 预检（tag + 三架构资产）
 │   ├── download-agent.sh    # 下载上游二进制 + SHA256 校验
 │   └── build_spk_native.sh  # 原生 Toolkit 构建（chroot）
 ├── ui/                      # 配置窗口（dsmuidir）

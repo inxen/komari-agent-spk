@@ -1,6 +1,8 @@
 # Makefile for the Komari Agent Synology SPK packaging project.
 #
 # Targets:
+#   make latest     - print the newest upstream version we can package
+#   make check-release - verify the upstream release + Linux assets exist
 #   make download   - download official agent binaries + verify SHA256
 #   make build      - alias for download (there is nothing to compile)
 #   make package    - build the .spk natively via the Synology Toolkit
@@ -27,16 +29,33 @@ DIST_DIR := dist
 DOWNLOAD_DIR := downloads
 
 # -----------------------------------------------------------------------------
-.PHONY: all download build package test clean toolkit-clean distclean help
+.PHONY: all download build check-release latest package test clean toolkit-clean distclean help
 
 help:
 	@echo "Komari Agent Synology SPK builder"
+	@echo "  make latest     - print the newest packagable upstream version"
+	@echo "  make check-release - verify the upstream release + assets exist"
 	@echo "  make download   - download official binaries + SHA256 verify"
 	@echo "  make build      - alias for download (nothing to compile)"
 	@echo "  make package    - build the .spk natively (Synology Toolkit, needs sudo)"
 	@echo "  make test       - run static checks (no DSM required)"
 	@echo "  make all        - download -> package -> test -> dist/*.spk"
 	@echo "  make clean      - remove build artifacts"
+
+# ---- Upstream release pre-flight -------------------------------------------
+# Verify the upstream release exists and carries every Linux asset we package.
+# Run this before dispatching a build with a hand-typed version: a wrong tag
+# otherwise only shows up as a bare curl 404 in the download step.
+#   make check-release                    # VERSION file
+#   make check-release CHECK_VERSION=latest
+CHECK_VERSION ?= $(UPSTREAM_VERSION)
+check-release:
+	@./tools/verify-release.sh $(CHECK_VERSION)
+
+# Newest upstream version that can be packaged (what the workflow's
+# `version: latest` input resolves to).
+latest:
+	@./tools/latest-version.sh
 
 # ---- Download + verify ------------------------------------------------------
 download:

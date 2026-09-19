@@ -47,11 +47,26 @@ DEST="$DOWNLOAD_DIR/$ASSET"
 echo "==> Downloading ${ASSET} v${VERSION}"
 echo "    from ${URL}"
 
-# Use curl if available, else wget.
+# Use curl if available, else wget. Retry connection problems / timeouts / 5xx
+# (but not 404 - a wrong version should fail immediately instead of hanging on
+# three pointless retries) and always leave a readable error behind.
 if command -v curl >/dev/null 2>&1; then
-    curl -fL --retry 3 -o "$DEST.tmp" "$URL"
+    if ! curl -fL --retry 3 --retry-delay 1 --retry-connrefused \
+        --connect-timeout 20 -o "$DEST.tmp" "$URL"; then
+        echo "ERROR: could not download ${ASSET} for upstream tag '${VERSION}'." >&2
+        echo "       URL: ${URL}" >&2
+        echo "       Check the tag exists: https://github.com/${REPO}/releases" >&2
+        rm -f "$DEST.tmp"
+        exit 1
+    fi
 elif command -v wget >/dev/null 2>&1; then
-    wget -q -O "$DEST.tmp" "$URL"
+    if ! wget -q --tries=3 --timeout=20 -O "$DEST.tmp" "$URL"; then
+        echo "ERROR: could not download ${ASSET} for upstream tag '${VERSION}'." >&2
+        echo "       URL: ${URL}" >&2
+        echo "       Check the tag exists: https://github.com/${REPO}/releases" >&2
+        rm -f "$DEST.tmp"
+        exit 1
+    fi
 else
     echo "Neither curl nor wget found." >&2
     exit 1
@@ -70,7 +85,8 @@ if command -v python3 >/dev/null 2>&1; then
     if [ -n "${GH_TOKEN:-}${GITHUB_TOKEN:-}" ]; then
         AUTH_HDR=(-H "Authorization: Bearer ${GH_TOKEN:-$GITHUB_TOKEN}")
     fi
-    EXPECTED_SHA="$(curl -fsSL "${AUTH_HDR[@]}" \
+    EXPECTED_SHA="$(curl -fsSL --retry 3 --retry-delay 1 --retry-connrefused \
+        --connect-timeout 20 "${AUTH_HDR[@]}" \
         "https://api.github.com/repos/${REPO}/releases/tags/${VERSION}" \
         | python3 -c "
 import json, sys
